@@ -30,13 +30,27 @@ IOVA structures, are never taken (no IOMMU group).
 
 ## Building
 
-Against a freebsd-src tree with arm64 IOMMU support (named components, the
-`sky1-iommu` branch) and a drm-kmod checkout (for `dmabuf.ko`):
+Against a freebsd-src tree with arm64 IOMMU support (named components) and
+Sky1's SCMI performance protocol (`sky1_scmi`), both on the `sky1-iommu`
+branch, and a drm-kmod checkout (for `dmabuf.ko`):
 
     tools/build.sh [objdir]
 
 It needs `hw.iommu.dma=1` and `hw.smmu.bypass_named=0` for translation; the
-driver works untranslated too.
+driver works untranslated too. Translated, the SMMU must map DMA as Normal
+memory (`sky1-iommu` 2427574f67): mapped as Device memory, as FreeBSD's SMMU
+driver did, the NPU runs ten times slower.
+
+## Clock
+
+The NPU's clock is an SCMI performance domain (`"perf"` in its `_DSD`
+`power-domains`), which the firmware starts at its top level:
+
+    sysctl dev.aipu.0.freq_levels      # 400 600 800 1200 (MHz)
+    sysctl dev.aipu.0.freq=800
+
+as CIX's driver offers through devfreq's userspace governor. MobileNetV2
+takes 1.46, 1.05, 0.84 and 0.72 ms at those levels.
 
 ## State
 
@@ -45,5 +59,4 @@ attaches, reports the NPU (Zhouyi v3, one cluster of three cores, 4 MB of
 GM), and runs inference: CIX's MobileNetV2 in about 7.3 ms, through Arm
 China's user-mode driver built for FreeBSD
 ([aipu-umd](https://github.com/JamesKane/aipu-umd)), or under the
-Linuxulator through CIX's `libnoe` (`kldload aipu_linux`). No devfreq: the
-firmware's clock.
+Linuxulator through CIX's `libnoe` (`kldload aipu_linux`).

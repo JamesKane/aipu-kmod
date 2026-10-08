@@ -30,6 +30,10 @@
  * (CIXH4000), powered with its cores, handed to the Linux driver as a
  * platform device.  In place of CIX's sky1/sky1.c, which does the same
  * through Linux's ACPI power domains and runtime PM.
+ *
+ * Its clock is an SCMI performance domain ("perf" in _DSD "power-domains"):
+ * dev.aipu.N.freq sets it from dev.aipu.N.freq_levels, as CIX's devfreq
+ * does with the userspace governor.  The firmware starts it at the top.
  */
 
 #include <sys/param.h>
@@ -37,21 +41,29 @@
 #include <sys/bus.h>
 #include <sys/kernel.h>
 #include <sys/module.h>
+#include <sys/sbuf.h>
+#include <sys/sysctl.h>
 
 #include <contrib/dev/acpica/include/acpi.h>
 #include <dev/acpica/acpivar.h>
+
+#include <arm64/cix/sky1_scmi.h>
 
 #include "acpi_if.h"
 #include "aipu_freebsd.h"
 
 /* The NPU's cores: power-only ACPI children, each with power resources. */
 #define	AIPU_FBSD_NCORES	3
+#define	AIPU_FBSD_MAXLEVELS	16
 
 static char *aipu_fbsd_acpi_ids[] = { "CIXH4000", NULL };
 
 struct aipu_fbsd_softc {
 	device_t	dev;
 	bool		powered;
+	uint32_t	perf;		/* SCMI performance domain */
+	int		nlevels;	/* its levels, 0 without DVFS */
+	uint32_t	levels[AIPU_FBSD_MAXLEVELS];	/* kHz */
 };
 
 int
@@ -81,6 +93,108 @@ aipu_fbsd_get_u32_prop(device_t dev, const char *name, uint32_t *vals,
 	default:
 		return (-1);
 	}
+}
+
+/*
+ * The SCMI performance domain named "perf": "power-domains" is a package of
+ * (reference, domain) pairs, "power-domain-names" their names.
+ */
+static int
+aipu_fbsd_perf_domain(device_t dev, uint32_t *domain)
+{
+	const ACPI_OBJECT *pds, *names, *e;
+	device_t bus = device_get_parent(dev);
+	uint32_t i, k;
+
+	if (ACPI_FAILURE(ACPI_GET_PROPERTY(bus, dev, "power-domains", &pds)) ||
+	    pds->Type != ACPI_TYPE_PACKAGE ||
+	    ACPI_FAILURE(ACPI_GET_PROPERTY(bus, dev, "power-domain-names",
+	    &names)))
+		return (ENOENT);
+	for (i = 0, k = 0; i + 1 < pds->Package.Count; i++) {
+		e = &pds->Package.Elements[i];
+		if (e->Type != ACPI_TYPE_LOCAL_REFERENCE)
+			continue;
+		e++;
+		if (e->Type != ACPI_TYPE_INTEGER)
+			return (ENOENT);
+		/* The k-th pair's name: a string, or a package of them. */
+		if ((names->Type == ACPI_TYPE_STRING && k == 0 &&
+		    strcmp(names->String.Pointer, "perf") == 0) ||
+		    (names->Type == ACPI_TYPE_PACKAGE &&
+		    k < names->Package.Count &&
+		    names->Package.Elements[k].Type == ACPI_TYPE_STRING &&
+		    strcmp(names->Package.Elements[k].String.Pointer,
+		    "perf") == 0)) {
+			*domain = e->Integer.Value;
+			return (0);
+		}
+		k++;
+	}
+	return (ENOENT);
+}
+
+static int
+aipu_fbsd_freq_sysctl(SYSCTL_HANDLER_ARGS)
+{
+	struct aipu_fbsd_softc *sc = arg1;
+	uint32_t khz;
+	int error, i, mhz;
+
+	if ((error = sky1_scmi_perf_get(sc->perf, &khz)) != 0)
+		return (error);
+	mhz = khz / 1000;
+	error = sysctl_handle_int(oidp, &mhz, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+	for (i = 0; i < sc->nlevels; i++)
+		if (sc->levels[i] / 1000 == (uint32_t)mhz)
+			return (sky1_scmi_perf_set(sc->perf, sc->levels[i]));
+	return (EINVAL);
+}
+
+static int
+aipu_fbsd_levels_sysctl(SYSCTL_HANDLER_ARGS)
+{
+	struct aipu_fbsd_softc *sc = arg1;
+	struct sbuf sb;
+	int error, i;
+
+	sbuf_new_for_sysctl(&sb, NULL, 64, req);
+	for (i = 0; i < sc->nlevels; i++)
+		sbuf_printf(&sb, "%s%u", i > 0 ? " " : "", sc->levels[i] / 1000);
+	error = sbuf_finish(&sb);
+	sbuf_delete(&sb);
+	return (error);
+}
+
+/* DVFS, if the firmware describes it: the levels, and the sysctls. */
+static void
+aipu_fbsd_dvfs_attach(struct aipu_fbsd_softc *sc)
+{
+	struct sysctl_ctx_list *ctx;
+	struct sysctl_oid_list *kids;
+	int error;
+
+	if (aipu_fbsd_perf_domain(sc->dev, &sc->perf) != 0)
+		return;
+	error = sky1_scmi_perf_levels(sc->perf, sc->levels,
+	    AIPU_FBSD_MAXLEVELS, &sc->nlevels);
+	if (error != 0 || sc->nlevels == 0) {
+		device_printf(sc->dev, "no levels for performance domain %u "
+		    "(%d)\n", sc->perf, error);
+		sc->nlevels = 0;
+		return;
+	}
+	sc->nlevels = MIN(sc->nlevels, AIPU_FBSD_MAXLEVELS);
+	ctx = device_get_sysctl_ctx(sc->dev);
+	kids = SYSCTL_CHILDREN(device_get_sysctl_tree(sc->dev));
+	SYSCTL_ADD_PROC(ctx, kids, OID_AUTO, "freq",
+	    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE, sc, 0,
+	    aipu_fbsd_freq_sysctl, "I", "NPU clock (MHz), one of freq_levels");
+	SYSCTL_ADD_PROC(ctx, kids, OID_AUTO, "freq_levels",
+	    CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE, sc, 0,
+	    aipu_fbsd_levels_sysctl, "A", "NPU clock levels (MHz)");
 }
 
 /*
@@ -155,6 +269,8 @@ aipu_fbsd_attach(device_t dev)
 	sc->powered = true;
 
 	error = -aipu_fbsd_linux_attach(dev, pa, size, irq);
+	if (error == 0)
+		aipu_fbsd_dvfs_attach(sc);
 	if (error != 0) {
 		aipu_fbsd_linux_detach();
 		(void)aipu_fbsd_power(sc, ACPI_STATE_D3);
