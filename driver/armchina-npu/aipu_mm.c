@@ -1808,7 +1808,7 @@ int aipu_init_mm(struct aipu_memory_manager *mm, struct platform_device *p_dev, 
 		/*
 		 * The IOMMU translates below the DMA API (iommu_group_get()
 		 * finds no group): as the V3 + IOMMU fallback below, DMA below
-		 * 3GB, in a 32-bit 2GB ASID window.
+		 * 3GB, in one 32-bit 2GB ASID window.
 		 */
 		if (mm->version == AIPU_ISA_VERSION_ZHOUYI_V3) {
 			ret = dma_set_mask_and_coherent(mm->dev, 0xbfffffffULL);
@@ -1818,6 +1818,8 @@ int aipu_init_mm(struct aipu_memory_manager *mm, struct platform_device *p_dev, 
 			}
 			mm->dma_mask = 32;
 			mm->default_asid_size = SZ_2G;
+			/* One ASID, as the fallback's: user space indexes it. */
+			mm->valid_asid_cnt = 1;
 		}
 #endif
 		mm->res_cnt = aipu_mm_add_reserved_regions(mm);
