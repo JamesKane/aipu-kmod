@@ -193,3 +193,4 @@ ACPI_PNP_INFO(aipu_fbsd_acpi_ids);
 MODULE_DEPEND(aipu, acpi, 1, 1, 1);
 MODULE_DEPEND(aipu, dmabuf, 1, 1, 1);
 MODULE_DEPEND(aipu, linuxkpi, 1, 1, 1);
+MODULE_VERSION(aipu, 1);

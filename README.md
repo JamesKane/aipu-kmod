@@ -13,6 +13,10 @@ LinuxKPI, out of tree.
   power resources, the platform device the driver attaches to, ACPI `_DSD`
   properties, and DMA buffers mapped write-combined, as Linux maps them for
   a device that does not snoop the CPU caches.
+- `freebsd/aipu_linux.c` (`aipu_linux.ko`, BSD-2-Clause): `/dev/aipu` for
+  Linux programs under the Linuxulator, such as CIX's binary-only `libnoe`:
+  their ioctls, in Linux's encoding, run as FreeBSD's. mmap and poll need
+  nothing more.
 - `tools/aiputest/`: a test of `/dev/aipu` (capabilities, a buffer
   allocated, mapped, written, read back and freed).
 
@@ -36,8 +40,10 @@ driver works untranslated too.
 
 ## State
 
-Phase 1 of the plan (AbyssBSD `docs/boards/orangepi-6-plus/npu.md`): the
-driver attaches, reports the NPU (Zhouyi v3, one cluster of three cores,
-4 MB of GM), and buffers allocate, map and free. No job has run yet: that
-needs Arm China's user-mode driver and a compiled graph (phase 2). No
-devfreq: the firmware's clock.
+The plan is in AbyssBSD `docs/boards/orangepi-6-plus/npu.md`. The driver
+attaches, reports the NPU (Zhouyi v3, one cluster of three cores, 4 MB of
+GM), and runs inference: CIX's MobileNetV2 in about 7.3 ms, through Arm
+China's user-mode driver built for FreeBSD
+([aipu-umd](https://github.com/JamesKane/aipu-umd)), or under the
+Linuxulator through CIX's `libnoe` (`kldload aipu_linux`). No devfreq: the
+firmware's clock.

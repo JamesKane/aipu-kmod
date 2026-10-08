@@ -39,6 +39,8 @@
 
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
+#include <linux/file.h>
+#include <linux/fs.h>
 #include <linux/err.h>
 #include <linux/mm.h>
 #include <linux/module.h>
@@ -290,6 +292,23 @@ aipu_fbsd_linux_detach(void)
 	if (aipu_fbsd_pdev != NULL)
 		platform_device_unregister(aipu_fbsd_pdev);
 	aipu_fbsd_pdev = NULL;
+}
+
+/* For aipu_linux.ko: a Linux program's descriptor, ours or not. */
+bool
+aipu_fbsd_is_aipu_fd(int fd)
+{
+	struct linux_file *filp;
+	struct vnode *vp;
+	bool ours;
+
+	if ((filp = linux_fget(fd)) == NULL)
+		return (false);
+	vp = filp->f_vnode;
+	ours = vp != NULL && vp->v_type == VCHR && vp->v_rdev != NULL &&
+	    strcmp(devtoname(vp->v_rdev), "aipu") == 0;
+	fput(filp);
+	return (ours);
 }
 
 MODULE_LICENSE("GPL v2");

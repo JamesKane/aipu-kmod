@@ -12,6 +12,8 @@
 int	aipu_fbsd_linux_attach(device_t dev, uint64_t pa, uint64_t size,
 	    int irq);
 void	aipu_fbsd_linux_detach(void);
+/* Whether the calling thread's descriptor fd is /dev/aipu (aipu_linux.ko). */
+bool	aipu_fbsd_is_aipu_fd(int fd);
 
 /*
  * aipu_freebsd_bus.c: an integer or integer-array _DSD property of dev,
