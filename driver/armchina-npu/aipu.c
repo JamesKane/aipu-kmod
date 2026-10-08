@@ -106,6 +106,8 @@ static long aipu_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	switch (cmd) {
 	case AIPU_IOCTL_QUERY_CAP:
+		/* Fields the query leaves unset (ASID bases) must not leak stack. */
+		memset(&cap, 0, sizeof(cap));
 		ret = aipu_priv_query_capability(aipu, &cap);
 		if (!ret && copy_to_user((struct aipu_cap __user *)arg, &cap, sizeof(cap)))
 			ret = -EINVAL;
