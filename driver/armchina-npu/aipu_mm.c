@@ -488,6 +488,10 @@ static int aipu_free_all_dma_iova_phy(struct aipu_memory_manager *mm, struct fil
 static struct aipu_iova_buffer *aipu_get_iova_buffer(struct aipu_memory_manager *mm, u64 iova, char* str);
 static struct device *aipu_mm_create_child_dev(struct device *dev, u32 idx)
 {
+#ifdef __FreeBSD__
+	/* For devicetree reserved memory, which ACPI never has. */
+	return NULL;
+#else
 	struct device *child = NULL;
 
 #if (KERNEL_VERSION(4, 11, 0) > LINUX_VERSION_CODE)
@@ -524,6 +528,7 @@ static struct device *aipu_mm_create_child_dev(struct device *dev, u32 idx)
 err:
 	put_device(child);
 	return NULL;
+#endif
 }
 
 int aipu_mm_hold_tcb_buf_alloc(struct aipu_memory_manager *mm, struct aipu_job *kern_job)
@@ -1357,6 +1362,10 @@ static void add_region_list(struct aipu_memory_manager *mm, int asid,
 
 static int aipu_mm_reserved_iova_for_never_map(struct aipu_memory_manager *mm, bool flag)
 {
+#ifdef __FreeBSD__
+	/* Own-IOVA (IOMMU) path: never taken on FreeBSD. */
+	return -ENODEV;
+#else
 	struct iommu_domain *iommu_domain = NULL;
 	struct iommu_dma_cookie *cookie = NULL;
 	struct iova_domain *iovad = NULL;
@@ -1398,10 +1407,15 @@ static int aipu_mm_reserved_iova_for_never_map(struct aipu_memory_manager *mm, b
 	} while (bus_dma_limit > 0);
 
 	return 0;
+#endif
 }
 
 static __maybe_unused int aipu_mm_add_iova_region(struct aipu_memory_manager *mm)
 {
+#ifdef __FreeBSD__
+	/* Own-IOVA (IOMMU) path: never taken on FreeBSD. */
+	return 0;
+#else
 	struct aipu_mem_region_obj *obj = NULL;
 	struct aipu_mem_region *reg = NULL;
 	int iova_region = 1;
@@ -1460,10 +1474,15 @@ static __maybe_unused int aipu_mm_add_iova_region(struct aipu_memory_manager *mm
 
 FINISH:
 	return region_idx;
+#endif
 }
 
 static int aipu_mm_add_reserved_regions(struct aipu_memory_manager *mm)
 {
+#ifdef __FreeBSD__
+	/* Devicetree memory-region: none under ACPI. */
+	return 0;
+#else
 	int ret = 0;
 	int idx = 0;
 	int asid_idx = 0;
@@ -1578,6 +1597,7 @@ static int aipu_mm_add_reserved_regions(struct aipu_memory_manager *mm)
 	} while (++idx < AIPU_CONFIG_MAX_RESERVED_REGIONS);
 
 	return res_cnt;
+#endif
 }
 
 static void aipu_mm_set_asid_base(struct aipu_memory_manager *mm)
@@ -1783,14 +1803,32 @@ int aipu_init_mm(struct aipu_memory_manager *mm, struct platform_device *p_dev, 
 	 *
 	 * KMD can accept multiple DRAM regions and/or multiple SRAM regions;
 	 */
-	if (!mm->has_iommu)
+	if (!mm->has_iommu) {
+#ifdef __FreeBSD__
+		/*
+		 * The IOMMU translates below the DMA API (iommu_group_get()
+		 * finds no group): as the V3 + IOMMU fallback below, DMA below
+		 * 3GB, in a 32-bit 2GB ASID window.
+		 */
+		if (mm->version == AIPU_ISA_VERSION_ZHOUYI_V3) {
+			ret = dma_set_mask_and_coherent(mm->dev, 0xbfffffffULL);
+			if (ret) {
+				dev_err(mm->dev, "cannot limit DMA to 3GB (%d)\n", ret);
+				goto finish;
+			}
+			mm->dma_mask = 32;
+			mm->default_asid_size = SZ_2G;
+		}
+#endif
 		mm->res_cnt = aipu_mm_add_reserved_regions(mm);
-	else if (mm->version == AIPU_ISA_VERSION_ZHOUYI_V3 && !mm->use_v3_custom_iova) {
+	} else if (mm->version == AIPU_ISA_VERSION_ZHOUYI_V3 && !mm->use_v3_custom_iova) {
 		/*
 		 * V3 + IOMMU (fallback mode): constrain DMA to 32-bit / 3GB
 		 * This is the original behavior when custom IOVA fails.
 		 */
-#if (KERNEL_VERSION(5, 5, 0) <= LINUX_VERSION_CODE)
+#ifdef __FreeBSD__
+		/* Not taken: no IOMMU group (above). */
+#elif (KERNEL_VERSION(5, 5, 0) <= LINUX_VERSION_CODE)
 		mm->dev->bus_dma_limit = 0xc0000000;
 #elif (KERNEL_VERSION(4, 19, 0) <= LINUX_VERSION_CODE)
 		mm->dev->bus_dma_mask = 0xc0000000;
